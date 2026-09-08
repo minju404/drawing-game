@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>멀티 캐치 드로잉</title>
-    <!-- PeerJS CDN -->
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <!-- PubNub CDN (가장 안정적인 실시간 통신 라이브러리) -->
+    <script src="https://cdn.pubnub.com/sdk/javascript/pubnub.7.2.2.min.js"></script>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background: #f4f7f6; margin: 0; padding: 20px; }
         .screen { display: none; background: white; max-width: 550px; margin: 0 auto; padding: 25px; border-radius: 15px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
@@ -83,12 +83,11 @@
 
     <script>
         const WORDS = ['사과', '바나나', '호랑이', '자동차', '비행기', '피자', '컴퓨터', '우주선', '안경', '축구공', '선글라스', '고양이'];
-        let peer = null;
-        let isHost = false;
-        let myId = '';
+        let pubnub = null;
+        let roomChannel = '';
+        let myId = 'user_' + Math.random().toString(36).substr(2, 6);
         let myName = '';
-        let hostConn = null;
-        let conns = [];
+        let isHost = false;
 
         let players = {}; 
         let currentRound = 0;
@@ -126,62 +125,48 @@
             }
         }
 
-        // WebRTC 우회 연결 설정 (외부 망/다른 네트워크 연결 보장)
-        function getPeerConfig() {
-            return {
-                debug: 2,
-                config: {
-                    iceServers: [
-                        { urls: 'stun:stun.l.google.com:19302' },
-                        { urls: 'stun:stun1.l.google.com:19302' },
-                        { urls: 'stun:stun2.l.google.com:19302' },
-                        { urls: 'stun:stun3.l.google.com:19302' }
-                    ]
+        function initPubNub(channel) {
+            pubnub = new PubNub({
+                publishKey: 'pub-c-8ba6f7e4-23e6-422f-a6dd-b169b1ad9024',
+                subscribeKey: 'sub-c-13a89a08-3221-4fa3-80b1-381c8ea39c4d',
+                userId: myId
+            });
+
+            roomChannel = 'room_' + channel;
+
+            pubnub.addListener({
+                message: function(event) {
+                    const data = event.message;
+                    if (isHost) handleHostMessage(data);
+                    handleClientMessage(data);
                 }
-            };
+            });
+
+            pubnub.subscribe({ channels: [roomChannel] });
+        }
+
+        function sendMsg(data) {
+            if (pubnub) {
+                pubnub.publish({ channel: roomChannel, message: data });
+            }
         }
 
         // --- 방 만들기 (Host) ---
         function createRoom() {
             myName = document.getElementById('nickname').value.trim() || '방장';
             isHost = true;
-            setStatus('방 서버 연결 중...');
+            disableInputs();
 
             const code = generateShortCode();
-            peer = new Peer(code, getPeerConfig());
+            document.getElementById('display-code').innerText = code;
+            document.getElementById('room-info').style.display = 'block';
+            document.getElementById('start-btn').style.display = 'inline-block';
 
-            peer.on('open', (id) => {
-                myId = id;
-                disableInputs();
-                players = {}; 
-                players[myId] = { name: myName, score: 0, drawing: null, votedFor: null };
-                
-                document.getElementById('display-code').innerText = id;
-                document.getElementById('room-info').style.display = 'block';
-                document.getElementById('start-btn').style.display = 'inline-block';
-                setStatus('');
-                updateLobbyUI();
-            });
+            players[myId] = { name: myName, score: 0, drawing: null, votedFor: null };
 
-            peer.on('connection', (conn) => {
-                conn.on('open', () => {
-                    conns.push(conn);
-                });
-                conn.on('data', (data) => handleHostData(conn, data));
-                conn.on('close', () => {
-                    delete players[conn.peer];
-                    broadcast({ type: 'LOBBY_UPDATE', players });
-                    updateLobbyUI();
-                });
-            });
-
-            peer.on('error', (err) => {
-                if (err.type === 'unavailable-id') {
-                    createRoom(); // 중복 코드 발생 시 자동 재시도
-                } else {
-                    setStatus('방 생성 오류: ' + err.type);
-                }
-            });
+            initPubNub(code);
+            setStatus('방이 생성되었습니다.');
+            updateLobbyUI();
         }
 
         // --- 방 참여하기 (Client) ---
@@ -189,74 +174,36 @@
             myName = document.getElementById('nickname').value.trim() || '게스트';
             const code = document.getElementById('join-code').value.trim().toUpperCase();
             
-            if (!code) {
-                alert('6자리 방 코드를 입력하세요.');
-                return;
-            }
+            if (!code) return alert('6자리 방 코드를 입력하세요.');
 
             isHost = false;
-            setStatus('방에 연결을 시도하는 중...');
+            disableInputs();
+            setStatus('접속 중...');
 
-            // 기존 연결 정리
-            if (peer) peer.destroy();
+            initPubNub(code);
 
-            peer = new Peer(getPeerConfig());
-
-            peer.on('open', (id) => {
-                myId = id;
-                setStatus('방장에게 연결 요청 중...');
-                
-                hostConn = peer.connect(code, { reliable: true });
-
-                // 타임아웃 처리 (7초 내 연결 안될 시 오류 안내)
-                const connectTimeout = setTimeout(() => {
-                    if (!hostConn || !hostConn.open) {
-                        setStatus('연결 시간 초과! 방 코드가 맞는지 확인해 주세요.');
-                    }
-                }, 7000);
-
-                hostConn.on('open', () => {
-                    clearTimeout(connectTimeout);
-                    disableInputs();
-                    setStatus('접속 성공!');
-                    hostConn.send({ type: 'JOIN', name: myName });
-                });
-
-                hostConn.on('data', (data) => handleClientData(data));
-                
-                hostConn.on('close', () => {
-                    alert('방장과의 연결이 끊어졌습니다.');
-                    location.reload();
-                });
-
-                hostConn.on('error', (err) => {
-                    clearTimeout(connectTimeout);
-                    setStatus('연결 에러가 발생했습니다.');
-                });
-            });
-
-            peer.on('error', (err) => {
-                setStatus('접속 실패! 방 코드를 다시 확인해 주세요.');
-            });
+            // 방장에게 참여 완료 신호 보냄
+            setTimeout(() => {
+                sendMsg({ type: 'JOIN', senderId: myId, name: myName });
+            }, 1000);
         }
 
-        // --- 호스트 데이터 처리 ---
-        function handleHostData(conn, data) {
+        // --- 방장 메시지 처리 ---
+        function handleHostMessage(data) {
             if (data.type === 'JOIN') {
-                players[conn.peer] = { name: data.name, score: 0, drawing: null, votedFor: null };
-                broadcast({ type: 'LOBBY_UPDATE', players });
-                updateLobbyUI();
+                players[data.senderId] = { name: data.name, score: 0, drawing: null, votedFor: null };
+                sendMsg({ type: 'LOBBY_UPDATE', players });
             } else if (data.type === 'SUBMIT_DRAWING') {
-                if (players[conn.peer]) players[conn.peer].drawing = data.image;
+                if (players[data.senderId]) players[data.senderId].drawing = data.image;
             } else if (data.type === 'SUBMIT_VOTE') {
-                if (players[conn.peer] && data.targetId !== conn.peer) {
-                    players[conn.peer].votedFor = data.targetId;
+                if (players[data.senderId] && data.targetId !== data.senderId) {
+                    players[data.senderId].votedFor = data.targetId;
                 }
             }
         }
 
-        // --- 클라이언트 데이터 처리 ---
-        function handleClientData(data) {
+        // --- 클라이언트 공통 메시지 처리 ---
+        function handleClientMessage(data) {
             if (data.type === 'LOBBY_UPDATE') {
                 players = data.players;
                 document.getElementById('room-info').style.display = 'block';
@@ -285,12 +232,6 @@
             }
         }
 
-        function broadcast(data) {
-            conns.forEach(c => {
-                if (c && c.open) c.send(data);
-            });
-        }
-
         function updateLobbyUI() {
             const list = document.getElementById('player-list');
             list.innerHTML = Object.values(players).map(p => `<li><b>${p.name}</b></li>`).join('');
@@ -306,8 +247,7 @@
         function hostNextRound() {
             currentRound++;
             if (currentRound > 8) {
-                broadcast({ type: 'END', players });
-                showEndScreen(players);
+                sendMsg({ type: 'END', players });
                 return;
             }
 
@@ -317,16 +257,13 @@
                 players[id].votedFor = null;
             }
 
-            const roundData = { type: 'ROUND_START', round: currentRound, word: currentWord };
-            broadcast(roundData);
-            handleClientData(roundData);
+            sendMsg({ type: 'ROUND_START', round: currentRound, word: currentWord });
 
             let time = 30;
             clearInterval(timerInterval);
             timerInterval = setInterval(() => {
                 time--;
-                broadcast({ type: 'TIMER', time });
-                handleClientData({ type: 'TIMER', time });
+                sendMsg({ type: 'TIMER', time });
 
                 if (time <= 0) {
                     clearInterval(timerInterval);
@@ -341,16 +278,13 @@
                 drawings[id] = { name: players[id].name, image: players[id].drawing };
             }
 
-            const voteData = { type: 'VOTE_START', drawings };
-            broadcast(voteData);
-            handleClientData(voteData);
+            sendMsg({ type: 'VOTE_START', drawings });
 
             let time = 15;
             clearInterval(timerInterval);
             timerInterval = setInterval(() => {
                 time--;
-                broadcast({ type: 'TIMER', time });
-                handleClientData({ type: 'TIMER', time });
+                sendMsg({ type: 'TIMER', time });
 
                 if (time <= 0) {
                     clearInterval(timerInterval);
@@ -379,10 +313,7 @@
                 }
             }
 
-            const resultData = { type: 'RESULT', winners, players };
-            broadcast(resultData);
-            handleClientData(resultData);
-
+            sendMsg({ type: 'RESULT', winners, players });
             setTimeout(() => { hostNextRound(); }, 5000);
         }
 
@@ -394,7 +325,6 @@
         ctx.lineWidth = 4;
         ctx.lineCap = 'round';
 
-        // 터치 지원 (모바일 접속 대비)
         canvas.addEventListener('mousedown', () => drawing = true);
         canvas.addEventListener('mouseup', () => { drawing = false; ctx.beginPath(); });
         canvas.addEventListener('mousemove', draw);
@@ -416,8 +346,7 @@
 
         function sendDrawing() {
             const img = canvas.toDataURL('image/png');
-            if (isHost) players[myId].drawing = img;
-            else if (hostConn && hostConn.open) hostConn.send({ type: 'SUBMIT_DRAWING', image: img });
+            sendMsg({ type: 'SUBMIT_DRAWING', senderId: myId, image: img });
         }
 
         function showVoteScreen(drawings) {
@@ -433,8 +362,7 @@
                 card.onclick = () => {
                     document.querySelectorAll('.card').forEach(c => c.style.borderColor = '#eee');
                     card.style.borderColor = '#2ecc71';
-                    if (isHost) players[myId].votedFor = id;
-                    else if (hostConn && hostConn.open) hostConn.send({ type: 'SUBMIT_VOTE', targetId: id });
+                    sendMsg({ type: 'SUBMIT_VOTE', senderId: myId, targetId: id });
                 };
 
                 const img = document.createElement('img');
