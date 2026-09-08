@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>멀티 캐치 드로잉</title>
-    <!-- PubNub CDN (가장 안정적인 실시간 통신 라이브러리) -->
+    <!-- PubNub SDK -->
     <script src="https://cdn.pubnub.com/sdk/javascript/pubnub.7.2.2.min.js"></script>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background: #f4f7f6; margin: 0; padding: 20px; }
@@ -85,7 +85,7 @@
         const WORDS = ['사과', '바나나', '호랑이', '자동차', '비행기', '피자', '컴퓨터', '우주선', '안경', '축구공', '선글라스', '고양이'];
         let pubnub = null;
         let roomChannel = '';
-        let myId = 'user_' + Math.random().toString(36).substr(2, 6);
+        let myId = 'usr_' + Math.random().toString(36).substring(2, 9);
         let myName = '';
         let isHost = false;
 
@@ -93,6 +93,7 @@
         let currentRound = 0;
         let currentWord = '';
         let timerInterval = null;
+        let joinRetryInterval = null;
 
         function generateShortCode() {
             const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -125,7 +126,7 @@
             }
         }
 
-        function initPubNub(channel) {
+        function initPubNub(channel, callback) {
             pubnub = new PubNub({
                 publishKey: 'pub-c-8ba6f7e4-23e6-422f-a6dd-b169b1ad9024',
                 subscribeKey: 'sub-c-13a89a08-3221-4fa3-80b1-381c8ea39c4d',
@@ -143,6 +144,8 @@
             });
 
             pubnub.subscribe({ channels: [roomChannel] });
+
+            if (callback) setTimeout(callback, 800);
         }
 
         function sendMsg(data) {
@@ -164,9 +167,10 @@
 
             players[myId] = { name: myName, score: 0, drawing: null, votedFor: null };
 
-            initPubNub(code);
-            setStatus('방이 생성되었습니다.');
-            updateLobbyUI();
+            initPubNub(code, () => {
+                setStatus('방이 생성되었습니다.');
+                updateLobbyUI();
+            });
         }
 
         // --- 방 참여하기 (Client) ---
@@ -178,21 +182,22 @@
 
             isHost = false;
             disableInputs();
-            setStatus('접속 중...');
+            setStatus('방장에게 참여 요청 중...');
 
-            initPubNub(code);
-
-            // 방장에게 참여 완료 신호 보냄
-            setTimeout(() => {
-                sendMsg({ type: 'JOIN', senderId: myId, name: myName });
-            }, 1000);
+            initPubNub(code, () => {
+                // 접속 성공할 때까지 1초 주기로 JOIN 신호 재전송
+                joinRetryInterval = setInterval(() => {
+                    sendMsg({ type: 'JOIN', senderId: myId, name: myName });
+                }, 1000);
+            });
         }
 
         // --- 방장 메시지 처리 ---
         function handleHostMessage(data) {
             if (data.type === 'JOIN') {
                 players[data.senderId] = { name: data.name, score: 0, drawing: null, votedFor: null };
-                sendMsg({ type: 'LOBBY_UPDATE', players });
+                // 참가자들에게 최신 유저 목록 브로드캐스트
+                sendMsg({ type: 'LOBBY_UPDATE', players: players });
             } else if (data.type === 'SUBMIT_DRAWING') {
                 if (players[data.senderId]) players[data.senderId].drawing = data.image;
             } else if (data.type === 'SUBMIT_VOTE') {
@@ -205,6 +210,11 @@
         // --- 클라이언트 공통 메시지 처리 ---
         function handleClientMessage(data) {
             if (data.type === 'LOBBY_UPDATE') {
+                // 방장으로부터 응답이 오면 재요청 타이머 정지
+                if (joinRetryInterval) {
+                    clearInterval(joinRetryInterval);
+                    joinRetryInterval = null;
+                }
                 players = data.players;
                 document.getElementById('room-info').style.display = 'block';
                 document.getElementById('code-label').innerText = '접속 완료!';
@@ -247,7 +257,7 @@
         function hostNextRound() {
             currentRound++;
             if (currentRound > 8) {
-                sendMsg({ type: 'END', players });
+                sendMsg({ type: 'END', players: players });
                 return;
             }
 
@@ -263,7 +273,7 @@
             clearInterval(timerInterval);
             timerInterval = setInterval(() => {
                 time--;
-                sendMsg({ type: 'TIMER', time });
+                sendMsg({ type: 'TIMER', time: time });
 
                 if (time <= 0) {
                     clearInterval(timerInterval);
@@ -278,13 +288,13 @@
                 drawings[id] = { name: players[id].name, image: players[id].drawing };
             }
 
-            sendMsg({ type: 'VOTE_START', drawings });
+            sendMsg({ type: 'VOTE_START', drawings: drawings });
 
             let time = 15;
             clearInterval(timerInterval);
             timerInterval = setInterval(() => {
                 time--;
-                sendMsg({ type: 'TIMER', time });
+                sendMsg({ type: 'TIMER', time: time });
 
                 if (time <= 0) {
                     clearInterval(timerInterval);
@@ -313,7 +323,7 @@
                 }
             }
 
-            sendMsg({ type: 'RESULT', winners, players });
+            sendMsg({ type: 'RESULT', winners: winners, players: players });
             setTimeout(() => { hostNextRound(); }, 5000);
         }
 
