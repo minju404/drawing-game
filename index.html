@@ -19,6 +19,7 @@
         .card img { width: 140px; height: 140px; background: #fafafa; border-radius: 5px; }
         button { padding: 10px 20px; font-size: 16px; background: #3498db; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
         button:hover { background: #2980b9; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
         input { padding: 10px; font-size: 16px; border: 1px solid #ddd; border-radius: 8px; outline: none; }
         .room-code { background: #eef2f5; padding: 10px; border-radius: 8px; font-weight: bold; letter-spacing: 2px; font-size: 20px; word-break: break-all; margin: 10px 0; }
     </style>
@@ -32,10 +33,10 @@
         
         <div id="lobby-inputs">
             <input type="text" id="nickname" placeholder="닉네임 입력"><br><br>
-            <button onclick="createRoom()">방 만들기 (방장)</button>
+            <button id="create-btn" onclick="createRoom()">방 만들기 (방장)</button>
             <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
             <input type="text" id="join-code" placeholder="6자리 방 코드 입력" maxlength="6" style="text-transform:uppercase;">
-            <button onclick="joinRoom()">참여하기</button>
+            <button id="join-btn" onclick="joinRoom()">참여하기</button>
         </div>
 
         <div id="room-info" style="display:none; margin-top: 20px;">
@@ -116,16 +117,23 @@
             players = {};
         }
 
+        function toggleButtons(disabled) {
+            document.getElementById('create-btn').disabled = disabled;
+            document.getElementById('join-btn').disabled = disabled;
+        }
+
         // --- 방 만들기 (Host) ---
         function createRoom() {
             myName = document.getElementById('nickname').value.trim();
             if (!myName) return alert('닉네임을 입력하세요.');
 
+            toggleButtons(true);
             resetPeer();
             isHost = true;
-            const roomCode = generate6DigitCode();
             
-            peer = new Peer(roomCode);
+            // PeerJS 서버 옵션 추가로 안정성 확보
+            const roomCode = generate6DigitCode();
+            peer = new Peer(roomCode, { debug: 1 });
 
             peer.on('open', (id) => {
                 myId = id;
@@ -139,17 +147,28 @@
             });
 
             peer.on('connection', (conn) => {
-                conns.push(conn);
+                conn.on('open', () => {
+                    conns.push(conn);
+                });
+                
                 conn.on('data', (data) => handleHostData(conn, data));
+                
                 conn.on('close', () => {
                     delete players[conn.peer];
+                    conns = conns.filter(c => c.peer !== conn.peer);
                     broadcast({ type: 'LOBBY_UPDATE', players });
                     updateLobbyUI();
                 });
             });
 
             peer.on('error', (err) => {
-                alert('방 생성 오류가 발생했습니다. 다시 시도해 주세요.');
+                toggleButtons(false);
+                if (err.type === 'unavailable-id') {
+                    // ID가 중복되면 재시도
+                    createRoom();
+                } else {
+                    alert('방 생성에 실패했습니다: ' + err.type);
+                }
             });
         }
 
@@ -161,15 +180,19 @@
             const code = document.getElementById('join-code').value.trim().toUpperCase();
             if (code.length !== 6) return alert('6자리 방 코드를 올바르게 입력하세요.');
 
+            toggleButtons(true);
             resetPeer();
             isHost = false;
-            peer = new Peer();
+            
+            peer = new Peer({ debug: 1 });
 
             peer.on('open', (id) => {
                 myId = id;
-                hostConn = peer.connect(code);
+                // 방장(Code) 서버로 데이터 채널 연결
+                hostConn = peer.connect(code, { reliable: true });
 
                 hostConn.on('open', () => {
+                    // 연결 성공 시 참가 전송
                     hostConn.send({ type: 'JOIN', name: myName });
                 });
 
@@ -178,10 +201,20 @@
                 hostConn.on('close', () => {
                     alert('방장과의 연결이 끊어졌습니다.');
                 });
+
+                hostConn.on('error', (err) => {
+                    toggleButtons(false);
+                    alert('연결 실패: ' + err);
+                });
             });
 
             peer.on('error', (err) => {
-                alert('존재하지 않는 방 코드이거나 연결할 수 없습니다.');
+                toggleButtons(false);
+                if (err.type === 'peer-not-found') {
+                    alert('존재하지 않는 방 코드입니다. 코드를 다시 확인해 주세요.');
+                } else {
+                    alert('연결 오류가 발생했습니다: ' + err.type);
+                }
             });
         }
 
@@ -197,6 +230,8 @@
                 }
 
                 players[conn.peer] = { name: data.name, score: 0, drawing: null, votedFor: null };
+                
+                // 새로운 참가자 및 기존 참가자들에게 로비 업데이트
                 broadcast({ type: 'LOBBY_UPDATE', players });
                 updateLobbyUI();
             } else if (data.type === 'SUBMIT_DRAWING') {
@@ -212,12 +247,13 @@
         function handleClientData(data) {
             if (data.type === 'REJECT') {
                 alert(data.reason);
+                toggleButtons(false);
                 if (peer) peer.destroy();
             } else if (data.type === 'LOBBY_UPDATE') {
                 players = data.players;
                 document.getElementById('lobby-inputs').style.display = 'none';
                 document.getElementById('room-info').style.display = 'block';
-                document.getElementById('room-code-label').innerText = '대기 대기 중...';
+                document.getElementById('room-code-label').innerText = '대기실 접속됨';
                 document.getElementById('display-code').innerText = '참여 완료';
                 updateLobbyUI();
             } else if (data.type === 'ROUND_START') {
@@ -243,7 +279,7 @@
 
         function broadcast(data) {
             conns.forEach(c => {
-                if (c.open) c.send(data);
+                if (c && c.open) c.send(data);
             });
         }
 
@@ -368,7 +404,7 @@
         function sendDrawing() {
             const img = canvas.toDataURL('image/png');
             if (isHost) players[myId].drawing = img;
-            else hostConn.send({ type: 'SUBMIT_DRAWING', image: img });
+            else if (hostConn && hostConn.open) hostConn.send({ type: 'SUBMIT_DRAWING', image: img });
         }
 
         function showVoteScreen(drawings) {
@@ -385,7 +421,7 @@
                     document.querySelectorAll('.card').forEach(c => c.style.borderColor = '#eee');
                     card.style.borderColor = '#2ecc71';
                     if (isHost) players[myId].votedFor = id;
-                    else hostConn.send({ type: 'SUBMIT_VOTE', targetId: id });
+                    else if (hostConn && hostConn.open) hostConn.send({ type: 'SUBMIT_VOTE', targetId: id });
                 };
 
                 const img = document.createElement('img');
