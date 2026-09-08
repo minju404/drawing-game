@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>노설치 멀티 드로잉 게임</title>
-    <!-- PeerJS CDN -->
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <title>멀티 캐치 드로잉</title>
+    <!-- 최신 PeerJS CDN 사용 -->
+    <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background: #f4f7f6; margin: 0; padding: 20px; }
         .screen { display: none; background: white; max-width: 550px; margin: 0 auto; padding: 25px; border-radius: 15px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
@@ -22,6 +22,7 @@
         button:disabled { background: #ccc; cursor: not-allowed; }
         input { padding: 10px; font-size: 16px; border: 1px solid #ddd; border-radius: 8px; outline: none; }
         .room-code { background: #eef2f5; padding: 10px; border-radius: 8px; font-weight: bold; letter-spacing: 1px; word-break: break-all; margin: 10px 0; }
+        #status-msg { margin-top: 10px; font-weight: bold; color: #e67e22; }
     </style>
 </head>
 <body>
@@ -38,6 +39,8 @@
             <input type="text" id="join-code" placeholder="방 코드 입력">
             <button id="join-btn" onclick="joinRoom()">참여하기</button>
         </div>
+
+        <div id="status-msg"></div>
 
         <div id="room-info" style="display:none; margin-top: 20px;">
             <p id="code-label">친구에게 아래 코드를 전달하세요:</p>
@@ -93,6 +96,10 @@
         let currentWord = '';
         let timerInterval = null;
 
+        function setStatus(msg) {
+            document.getElementById('status-msg').innerText = msg;
+        }
+
         function showScreen(id) {
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
             document.getElementById(id).classList.add('active');
@@ -103,27 +110,44 @@
             document.getElementById('nickname').disabled = true;
         }
 
+        // HTTPS 웹소켓 연결용 Peer 생성 옵션
+        function createPeerInstance() {
+            return new Peer({
+                debug: 1,
+                config: {
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                }
+            });
+        }
+
         // --- 방 만들기 (Host) ---
         function createRoom() {
             myName = document.getElementById('nickname').value.trim() || '방장';
             isHost = true;
-            disableInputs();
+            setStatus('방 생성 중...');
 
-            peer = new Peer();
+            peer = createPeerInstance();
 
             peer.on('open', (id) => {
                 myId = id;
-                players = {}; // 초기화
+                disableInputs();
+                players = {}; 
                 players[myId] = { name: myName, score: 0, drawing: null, votedFor: null };
                 
                 document.getElementById('display-code').innerText = id;
                 document.getElementById('room-info').style.display = 'block';
                 document.getElementById('start-btn').style.display = 'inline-block';
+                setStatus('');
                 updateLobbyUI();
             });
 
             peer.on('connection', (conn) => {
-                conns.push(conn);
+                conn.on('open', () => {
+                    conns.push(conn);
+                });
                 conn.on('data', (data) => handleHostData(conn, data));
                 conn.on('close', () => {
                     delete players[conn.peer];
@@ -132,7 +156,10 @@
                 });
             });
 
-            peer.on('error', (err) => alert('연결 오류: ' + err.type));
+            peer.on('error', (err) => {
+                setStatus('오류 발생: ' + err.type);
+                console.error(err);
+            });
         }
 
         // --- 방 참여하기 (Client) ---
@@ -142,23 +169,32 @@
             if (!code) return alert('방 코드를 입력하세요.');
 
             isHost = false;
-            disableInputs();
+            setStatus('방에 연결하는 중...');
 
-            peer = new Peer();
+            peer = createPeerInstance();
 
             peer.on('open', (id) => {
                 myId = id;
-                hostConn = peer.connect(code);
+                hostConn = peer.connect(code, { reliable: true });
                 
                 hostConn.on('open', () => {
+                    disableInputs();
+                    setStatus('접속 성공!');
                     hostConn.send({ type: 'JOIN', name: myName });
                 });
 
                 hostConn.on('data', (data) => handleClientData(data));
-                hostConn.on('close', () => alert('방장과의 연결이 끊어졌습니다.'));
+                
+                hostConn.on('close', () => {
+                    alert('방장과의 연결이 끊어졌습니다.');
+                    location.reload();
+                });
             });
 
-            peer.on('error', (err) => alert('방 접속 실패! 코드를 확인하세요.'));
+            peer.on('error', (err) => {
+                setStatus('접속 실패! 방 코드를 다시 확인해 주세요.');
+                console.error(err);
+            });
         }
 
         // --- 호스트 데이터 처리 ---
@@ -183,6 +219,7 @@
                 document.getElementById('room-info').style.display = 'block';
                 document.getElementById('code-label').innerText = '접속 완료!';
                 document.getElementById('display-code').innerText = '대기실 접속됨';
+                setStatus('');
                 updateLobbyUI();
             } else if (data.type === 'ROUND_START') {
                 showScreen('draw-screen');
@@ -206,7 +243,9 @@
         }
 
         function broadcast(data) {
-            conns.forEach(c => c.open && c.send(data));
+            conns.forEach(c => {
+                if (c && c.open) c.send(data);
+            });
         }
 
         function updateLobbyUI() {
