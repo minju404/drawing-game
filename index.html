@@ -22,6 +22,7 @@
         button:disabled { background: #ccc; cursor: not-allowed; }
         input { padding: 10px; font-size: 16px; border: 1px solid #ddd; border-radius: 8px; outline: none; }
         .room-code { background: #eef2f5; padding: 10px; border-radius: 8px; font-weight: bold; letter-spacing: 2px; font-size: 20px; word-break: break-all; margin: 10px 0; }
+        .status-msg { font-size: 14px; color: #7f8c8d; margin-top: 10px; }
     </style>
 </head>
 <body>
@@ -35,8 +36,9 @@
             <input type="text" id="nickname" placeholder="닉네임 입력"><br><br>
             <button id="create-btn" onclick="createRoom()">방 만들기 (방장)</button>
             <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
-            <input type="text" id="join-code" placeholder="6자리 방 코드 입력" maxlength="6" style="text-transform:uppercase;">
+            <input type="text" id="join-code" placeholder="방 코드 입력">
             <button id="join-btn" onclick="joinRoom()">참여하기</button>
+            <div id="status" class="status-msg"></div>
         </div>
 
         <div id="room-info" style="display:none; margin-top: 20px;">
@@ -94,13 +96,8 @@
         let currentWord = '';
         let timerInterval = null;
 
-        function generate6DigitCode() {
-            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-            let result = '';
-            for (let i = 0; i < 6; i++) {
-                result += chars.charAt(Math.floor(Math.random() * chars.length));
-            }
-            return result;
+        function setStatus(msg) {
+            document.getElementById('status').innerText = msg;
         }
 
         function showScreen(id) {
@@ -125,20 +122,21 @@
         // --- 방 만들기 (Host) ---
         function createRoom() {
             myName = document.getElementById('nickname').value.trim();
-            if (!myName) return alert('닉네임을 입력하세요.');
+            if (!myName) return alert('올바른 닉네임을 입력하세요.');
 
             toggleButtons(true);
+            setStatus('방을 생성하는 중입니다...');
             resetPeer();
             isHost = true;
             
-            // PeerJS 서버 옵션 추가로 안정성 확보
-            const roomCode = generate6DigitCode();
-            peer = new Peer(roomCode, { debug: 1 });
+            // PeerJS 표준 생성 사용 (서버 호환성 최적화)
+            peer = new Peer();
 
             peer.on('open', (id) => {
                 myId = id;
                 players[myId] = { name: myName, score: 0, drawing: null, votedFor: null };
                 
+                setStatus('');
                 document.getElementById('lobby-inputs').style.display = 'none';
                 document.getElementById('display-code').innerText = id;
                 document.getElementById('room-info').style.display = 'block';
@@ -163,36 +161,32 @@
 
             peer.on('error', (err) => {
                 toggleButtons(false);
-                if (err.type === 'unavailable-id') {
-                    // ID가 중복되면 재시도
-                    createRoom();
-                } else {
-                    alert('방 생성에 실패했습니다: ' + err.type);
-                }
+                setStatus('');
+                alert('방 생성 실패: ' + err.type);
             });
         }
 
         // --- 방 참여하기 (Client) ---
         function joinRoom() {
             myName = document.getElementById('nickname').value.trim();
-            if (!myName) return alert('닉네임을 입력하세요.');
+            if (!myName) return alert('올바른 닉네임을 입력하세요.');
 
-            const code = document.getElementById('join-code').value.trim().toUpperCase();
-            if (code.length !== 6) return alert('6자리 방 코드를 올바르게 입력하세요.');
+            const code = document.getElementById('join-code').value.trim();
+            if (!code) return alert('방 코드를 입력하세요.');
 
             toggleButtons(true);
+            setStatus('방에 연결하는 중입니다...');
             resetPeer();
             isHost = false;
             
-            peer = new Peer({ debug: 1 });
+            peer = new Peer();
 
             peer.on('open', (id) => {
                 myId = id;
-                // 방장(Code) 서버로 데이터 채널 연결
-                hostConn = peer.connect(code, { reliable: true });
+                hostConn = peer.connect(code);
 
                 hostConn.on('open', () => {
-                    // 연결 성공 시 참가 전송
+                    setStatus('');
                     hostConn.send({ type: 'JOIN', name: myName });
                 });
 
@@ -201,20 +195,12 @@
                 hostConn.on('close', () => {
                     alert('방장과의 연결이 끊어졌습니다.');
                 });
-
-                hostConn.on('error', (err) => {
-                    toggleButtons(false);
-                    alert('연결 실패: ' + err);
-                });
             });
 
             peer.on('error', (err) => {
                 toggleButtons(false);
-                if (err.type === 'peer-not-found') {
-                    alert('존재하지 않는 방 코드입니다. 코드를 다시 확인해 주세요.');
-                } else {
-                    alert('연결 오류가 발생했습니다: ' + err.type);
-                }
+                setStatus('');
+                alert('연결 실패: 방 코드를 확인해 주세요. (' + err.type + ')');
             });
         }
 
@@ -230,8 +216,6 @@
                 }
 
                 players[conn.peer] = { name: data.name, score: 0, drawing: null, votedFor: null };
-                
-                // 새로운 참가자 및 기존 참가자들에게 로비 업데이트
                 broadcast({ type: 'LOBBY_UPDATE', players });
                 updateLobbyUI();
             } else if (data.type === 'SUBMIT_DRAWING') {
@@ -253,7 +237,7 @@
                 players = data.players;
                 document.getElementById('lobby-inputs').style.display = 'none';
                 document.getElementById('room-info').style.display = 'block';
-                document.getElementById('room-code-label').innerText = '대기실 접속됨';
+                document.getElementById('room-code-label').innerText = '대기실 접속 완료';
                 document.getElementById('display-code').innerText = '참여 완료';
                 updateLobbyUI();
             } else if (data.type === 'ROUND_START') {
