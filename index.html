@@ -20,7 +20,7 @@
         button { padding: 10px 20px; font-size: 16px; background: #3498db; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
         button:hover { background: #2980b9; }
         input { padding: 10px; font-size: 16px; border: 1px solid #ddd; border-radius: 8px; outline: none; }
-        .room-code { background: #eef2f5; padding: 10px; border-radius: 8px; font-weight: bold; letter-spacing: 2px; font-size: 20px; word-break: break-all; }
+        .room-code { background: #eef2f5; padding: 10px; border-radius: 8px; font-weight: bold; letter-spacing: 2px; font-size: 20px; word-break: break-all; margin: 10px 0; }
     </style>
 </head>
 <body>
@@ -29,19 +29,21 @@
     <div id="lobby-screen" class="screen active">
         <h1>🎨 멀티 캐치 드로잉</h1>
         <p>설치 없이 브라우저에서 바로 즐기는 게임</p>
-        <input type="text" id="nickname" placeholder="닉네임 입력"><br><br>
         
-        <button onclick="createRoom()">방 만들기 (방장)</button>
-        <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
-        
-        <input type="text" id="join-code" placeholder="6자리 방 코드 입력" maxlength="6" style="text-transform:uppercase;">
-        <button onclick="joinRoom()">참여하기</button>
+        <div id="lobby-inputs">
+            <input type="text" id="nickname" placeholder="닉네임 입력"><br><br>
+            <button onclick="createRoom()">방 만들기 (방장)</button>
+            <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
+            <input type="text" id="join-code" placeholder="6자리 방 코드 입력" maxlength="6" style="text-transform:uppercase;">
+            <button onclick="joinRoom()">참여하기</button>
+        </div>
 
         <div id="room-info" style="display:none; margin-top: 20px;">
-            <p>친구에게 아래 코드를 전달하세요:</p>
+            <p id="room-code-label">친구에게 아래 코드를 전달하세요:</p>
             <div class="room-code" id="display-code"></div>
             <h3>참여 유저 목록</h3>
-            <ul id="player-list" style="list-style:none; padding:0;"></ul>
+            <ul id="player-list" style="list-style:none; padding:0; font-size:18px;"></ul>
+            <br>
             <button id="start-btn" onclick="hostStartGame()" style="display:none; background:#2ecc71;">게임 시작 (8라운드)</button>
         </div>
     </div>
@@ -105,20 +107,31 @@
             document.getElementById(id).classList.add('active');
         }
 
+        function resetPeer() {
+            if (peer) {
+                peer.destroy();
+                peer = null;
+            }
+            conns = [];
+            players = {};
+        }
+
         // --- 방 만들기 (Host) ---
         function createRoom() {
             myName = document.getElementById('nickname').value.trim();
             if (!myName) return alert('닉네임을 입력하세요.');
 
+            resetPeer();
             isHost = true;
             const roomCode = generate6DigitCode();
             
-            // PeerJS Custom ID 사용
             peer = new Peer(roomCode);
 
             peer.on('open', (id) => {
                 myId = id;
                 players[myId] = { name: myName, score: 0, drawing: null, votedFor: null };
+                
+                document.getElementById('lobby-inputs').style.display = 'none';
                 document.getElementById('display-code').innerText = id;
                 document.getElementById('room-info').style.display = 'block';
                 document.getElementById('start-btn').style.display = 'inline-block';
@@ -136,11 +149,7 @@
             });
 
             peer.on('error', (err) => {
-                if (err.type === 'unavailable-id') {
-                    alert('방 코드 생성에 실패했습니다. 다시 시도해주세요.');
-                } else {
-                    alert('오류 발생: ' + err.type);
-                }
+                alert('방 생성 오류가 발생했습니다. 다시 시도해 주세요.');
             });
         }
 
@@ -152,6 +161,7 @@
             const code = document.getElementById('join-code').value.trim().toUpperCase();
             if (code.length !== 6) return alert('6자리 방 코드를 올바르게 입력하세요.');
 
+            resetPeer();
             isHost = false;
             peer = new Peer();
 
@@ -171,18 +181,13 @@
             });
 
             peer.on('error', (err) => {
-                if (err.type === 'peer-not-found') {
-                    alert('존재하지 않는 방 코드입니다.');
-                } else {
-                    alert('연결 오류가 발생했습니다.');
-                }
+                alert('존재하지 않는 방 코드이거나 연결할 수 없습니다.');
             });
         }
 
         // --- 호스트 데이터 처리 ---
         function handleHostData(conn, data) {
             if (data.type === 'JOIN') {
-                // 1인 1닉네임 중복 체크
                 const isDuplicateName = Object.values(players).some(p => p.name === data.name);
                 
                 if (isDuplicateName) {
@@ -210,7 +215,9 @@
                 if (peer) peer.destroy();
             } else if (data.type === 'LOBBY_UPDATE') {
                 players = data.players;
+                document.getElementById('lobby-inputs').style.display = 'none';
                 document.getElementById('room-info').style.display = 'block';
+                document.getElementById('room-code-label').innerText = '대기 대기 중...';
                 document.getElementById('display-code').innerText = '참여 완료';
                 updateLobbyUI();
             } else if (data.type === 'ROUND_START') {
@@ -242,7 +249,7 @@
 
         function updateLobbyUI() {
             const list = document.getElementById('player-list');
-            list.innerHTML = Object.values(players).map(p => `<li><b>${p.name}</b></li>`).join('');
+            list.innerHTML = Object.values(players).map(p => `<li>👤 <b>${p.name}</b></li>`).join('');
         }
 
         // --- 게임 루프 (Host 제어) ---
