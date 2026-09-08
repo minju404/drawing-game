@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>노설치 멀티 드로잉 게임</title>
-    <!-- PeerJS CDN (별도 설치 없이 웹소켓 통신 가능) -->
+    <!-- PeerJS CDN -->
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background: #f4f7f6; margin: 0; padding: 20px; }
@@ -19,8 +19,9 @@
         .card img { width: 140px; height: 140px; background: #fafafa; border-radius: 5px; }
         button { padding: 10px 20px; font-size: 16px; background: #3498db; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
         button:hover { background: #2980b9; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
         input { padding: 10px; font-size: 16px; border: 1px solid #ddd; border-radius: 8px; outline: none; }
-        .room-code { background: #eef2f5; padding: 10px; border-radius: 8px; font-weight: bold; letter-spacing: 1px; word-break: break-all; }
+        .room-code { background: #eef2f5; padding: 10px; border-radius: 8px; font-weight: bold; letter-spacing: 1px; word-break: break-all; margin: 10px 0; }
     </style>
 </head>
 <body>
@@ -31,14 +32,15 @@
         <p>설치 없이 브라우저에서 바로 즐기는 게임</p>
         <input type="text" id="nickname" placeholder="닉네임 입력"><br><br>
         
-        <button onclick="createRoom()">방 만들기 (방장)</button>
-        <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
-        
-        <input type="text" id="join-code" placeholder="방 코드 입력">
-        <button onclick="joinRoom()">참여하기</button>
+        <div id="action-buttons">
+            <button id="create-btn" onclick="createRoom()">방 만들기 (방장)</button>
+            <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
+            <input type="text" id="join-code" placeholder="방 코드 입력">
+            <button id="join-btn" onclick="joinRoom()">참여하기</button>
+        </div>
 
         <div id="room-info" style="display:none; margin-top: 20px;">
-            <p>친구에게 아래 코드를 전달하세요:</p>
+            <p id="code-label">친구에게 아래 코드를 전달하세요:</p>
             <div class="room-code" id="display-code"></div>
             <h3>참여 유저 목록</h3>
             <ul id="player-list" style="list-style:none; padding:0;"></ul>
@@ -84,10 +86,9 @@
         let myId = '';
         let myName = '';
         let hostConn = null;
-        let conns = []; // Host 전용: 클라이언트 연결 목록
+        let conns = [];
 
-        // 게임 상태 (Host가 관리)
-        let players = {}; // { id: { name, score, drawing, votedFor } }
+        let players = {}; 
         let currentRound = 0;
         let currentWord = '';
         let timerInterval = null;
@@ -97,15 +98,24 @@
             document.getElementById(id).classList.add('active');
         }
 
+        function disableInputs() {
+            document.getElementById('action-buttons').style.display = 'none';
+            document.getElementById('nickname').disabled = true;
+        }
+
         // --- 방 만들기 (Host) ---
         function createRoom() {
-            myName = document.getElementById('nickname').value || '방장';
+            myName = document.getElementById('nickname').value.trim() || '방장';
             isHost = true;
+            disableInputs();
+
             peer = new Peer();
 
             peer.on('open', (id) => {
                 myId = id;
+                players = {}; // 초기화
                 players[myId] = { name: myName, score: 0, drawing: null, votedFor: null };
+                
                 document.getElementById('display-code').innerText = id;
                 document.getElementById('room-info').style.display = 'block';
                 document.getElementById('start-btn').style.display = 'inline-block';
@@ -121,25 +131,34 @@
                     updateLobbyUI();
                 });
             });
+
+            peer.on('error', (err) => alert('연결 오류: ' + err.type));
         }
 
         // --- 방 참여하기 (Client) ---
         function joinRoom() {
-            myName = document.getElementById('nickname').value || '게스트';
+            myName = document.getElementById('nickname').value.trim() || '게스트';
             const code = document.getElementById('join-code').value.trim();
             if (!code) return alert('방 코드를 입력하세요.');
 
             isHost = false;
+            disableInputs();
+
             peer = new Peer();
 
             peer.on('open', (id) => {
                 myId = id;
                 hostConn = peer.connect(code);
+                
                 hostConn.on('open', () => {
                     hostConn.send({ type: 'JOIN', name: myName });
                 });
+
                 hostConn.on('data', (data) => handleClientData(data));
+                hostConn.on('close', () => alert('방장과의 연결이 끊어졌습니다.'));
             });
+
+            peer.on('error', (err) => alert('방 접속 실패! 코드를 확인하세요.'));
         }
 
         // --- 호스트 데이터 처리 ---
@@ -162,7 +181,8 @@
             if (data.type === 'LOBBY_UPDATE') {
                 players = data.players;
                 document.getElementById('room-info').style.display = 'block';
-                document.getElementById('display-code').innerText = '연결됨';
+                document.getElementById('code-label').innerText = '접속 완료!';
+                document.getElementById('display-code').innerText = '대기실 접속됨';
                 updateLobbyUI();
             } else if (data.type === 'ROUND_START') {
                 showScreen('draw-screen');
@@ -186,7 +206,7 @@
         }
 
         function broadcast(data) {
-            conns.forEach(c => c.send(data));
+            conns.forEach(c => c.open && c.send(data));
         }
 
         function updateLobbyUI() {
@@ -310,7 +330,7 @@
         function sendDrawing() {
             const img = canvas.toDataURL('image/png');
             if (isHost) players[myId].drawing = img;
-            else hostConn.send({ type: 'SUBMIT_DRAWING', image: img });
+            else if (hostConn && hostConn.open) hostConn.send({ type: 'SUBMIT_DRAWING', image: img });
         }
 
         function showVoteScreen(drawings) {
@@ -319,7 +339,7 @@
             grid.innerHTML = '';
 
             for (let id in drawings) {
-                if (id === myId) continue; // 내 그림 제외
+                if (id === myId) continue;
 
                 const card = document.createElement('div');
                 card.className = 'card';
@@ -327,7 +347,7 @@
                     document.querySelectorAll('.card').forEach(c => c.style.borderColor = '#eee');
                     card.style.borderColor = '#2ecc71';
                     if (isHost) players[myId].votedFor = id;
-                    else hostConn.send({ type: 'SUBMIT_VOTE', targetId: id });
+                    else if (hostConn && hostConn.open) hostConn.send({ type: 'SUBMIT_VOTE', targetId: id });
                 };
 
                 const img = document.createElement('img');
