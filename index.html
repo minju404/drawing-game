@@ -4,8 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>멀티 캐치 드로잉</title>
-    <!-- PubNub SDK -->
-    <script src="https://cdn.pubnub.com/sdk/javascript/pubnub.7.2.2.min.js"></script>
+    <!-- Firebase SDK (무료 실시간 데이터베이스) -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background: #f4f7f6; margin: 0; padding: 20px; }
         .screen { display: none; background: white; max-width: 550px; margin: 0 auto; padding: 25px; border-radius: 15px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
@@ -82,18 +83,20 @@
     </div>
 
     <script>
+        // 공개 무료 데이터베이스 설정
+        const firebaseConfig = {
+            databaseURL: "https://public-drawing-game-default-rtdb.asia-southeast1.firebasedatabase.app/"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
         const WORDS = ['사과', '바나나', '호랑이', '자동차', '비행기', '피자', '컴퓨터', '우주선', '안경', '축구공', '선글라스', '고양이'];
-        let pubnub = null;
-        let roomChannel = '';
-        let myId = 'usr_' + Math.random().toString(36).substring(2, 9);
+        let roomRef = null;
+        let roomCode = '';
+        let myId = 'u_' + Math.random().toString(36).substring(2, 9);
         let myName = '';
         let isHost = false;
-
-        let players = {}; 
-        let currentRound = 0;
-        let currentWord = '';
         let timerInterval = null;
-        let joinRetryInterval = null;
 
         function generateShortCode() {
             const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -126,208 +129,218 @@
             }
         }
 
-        function initPubNub(channel, callback) {
-            pubnub = new PubNub({
-                publishKey: 'pub-c-8ba6f7e4-23e6-422f-a6dd-b169b1ad9024',
-                subscribeKey: 'sub-c-13a89a08-3221-4fa3-80b1-381c8ea39c4d',
-                userId: myId
-            });
-
-            roomChannel = 'room_' + channel;
-
-            pubnub.addListener({
-                message: function(event) {
-                    const data = event.message;
-                    if (isHost) handleHostMessage(data);
-                    handleClientMessage(data);
-                }
-            });
-
-            pubnub.subscribe({ channels: [roomChannel] });
-
-            if (callback) setTimeout(callback, 800);
-        }
-
-        function sendMsg(data) {
-            if (pubnub) {
-                pubnub.publish({ channel: roomChannel, message: data });
-            }
-        }
-
         // --- 방 만들기 (Host) ---
         function createRoom() {
             myName = document.getElementById('nickname').value.trim() || '방장';
             isHost = true;
             disableInputs();
 
-            const code = generateShortCode();
-            document.getElementById('display-code').innerText = code;
-            document.getElementById('room-info').style.display = 'block';
-            document.getElementById('start-btn').style.display = 'inline-block';
+            roomCode = generateShortCode();
+            roomRef = db.ref('rooms/' + roomCode);
 
-            players[myId] = { name: myName, score: 0, drawing: null, votedFor: null };
+            // 초기 방 정보 생성
+            const initialData = {
+                state: 'LOBBY',
+                round: 0,
+                word: '',
+                timeLeft: 0,
+                players: {}
+            };
+            initialData.players[myId] = { name: myName, score: 0, drawing: '', vote: '' };
 
-            initPubNub(code, () => {
+            roomRef.set(initialData).then(() => {
+                document.getElementById('display-code').innerText = roomCode;
+                document.getElementById('room-info').style.display = 'block';
+                document.getElementById('start-btn').style.display = 'inline-block';
                 setStatus('방이 생성되었습니다.');
-                updateLobbyUI();
+                listenRoomChanges();
             });
+
+            // 창 닫을 때 유저 제거
+            roomRef.child('players/' + myId).onDisconnect().remove();
         }
 
         // --- 방 참여하기 (Client) ---
         function joinRoom() {
             myName = document.getElementById('nickname').value.trim() || '게스트';
-            const code = document.getElementById('join-code').value.trim().toUpperCase();
+            roomCode = document.getElementById('join-code').value.trim().toUpperCase();
             
-            if (!code) return alert('6자리 방 코드를 입력하세요.');
+            if (!codeValidation(roomCode)) return;
 
-            isHost = false;
-            disableInputs();
-            setStatus('방장에게 참여 요청 중...');
+            setStatus('방에 접속 중...');
 
-            initPubNub(code, () => {
-                // 접속 성공할 때까지 1초 주기로 JOIN 신호 재전송
-                joinRetryInterval = setInterval(() => {
-                    sendMsg({ type: 'JOIN', senderId: myId, name: myName });
-                }, 1000);
+            roomRef = db.ref('rooms/' + roomCode);
+
+            roomRef.once('value').then(snapshot => {
+                if (!snapshot.exists()) {
+                    setStatus('존재하지 않는 방 코드입니다.');
+                    return;
+                }
+
+                disableInputs();
+                
+                // 내 정보 추가
+                roomRef.child('players/' + myId).set({
+                    name: myName,
+                    score: 0,
+                    drawing: '',
+                    vote: ''
+                }).then(() => {
+                    document.getElementById('room-info').style.display = 'block';
+                    document.getElementById('code-label').innerText = '접속 완료!';
+                    document.getElementById('display-code').innerText = roomCode;
+                    setStatus('');
+                    listenRoomChanges();
+                });
+
+                roomRef.child('players/' + myId).onDisconnect().remove();
             });
         }
 
-        // --- 방장 메시지 처리 ---
-        function handleHostMessage(data) {
-            if (data.type === 'JOIN') {
-                players[data.senderId] = { name: data.name, score: 0, drawing: null, votedFor: null };
-                // 참가자들에게 최신 유저 목록 브로드캐스트
-                sendMsg({ type: 'LOBBY_UPDATE', players: players });
-            } else if (data.type === 'SUBMIT_DRAWING') {
-                if (players[data.senderId]) players[data.senderId].drawing = data.image;
-            } else if (data.type === 'SUBMIT_VOTE') {
-                if (players[data.senderId] && data.targetId !== data.senderId) {
-                    players[data.senderId].votedFor = data.targetId;
-                }
+        function codeValidation(code) {
+            if (!code || code.length !== 6) {
+                alert('6자리 방 코드를 정확히 입력하세요.');
+                return false;
             }
+            return true;
         }
 
-        // --- 클라이언트 공통 메시지 처리 ---
-        function handleClientMessage(data) {
-            if (data.type === 'LOBBY_UPDATE') {
-                // 방장으로부터 응답이 오면 재요청 타이머 정지
-                if (joinRetryInterval) {
-                    clearInterval(joinRetryInterval);
-                    joinRetryInterval = null;
+        // --- 데이터베이스 실시간 수신 ---
+        function listenRoomChanges() {
+            roomRef.on('value', snapshot => {
+                const data = snapshot.val();
+                if (!data) return;
+
+                // 유저 목록 업데이트
+                if (data.players) {
+                    updateLobbyUI(data.players);
                 }
-                players = data.players;
-                document.getElementById('room-info').style.display = 'block';
-                document.getElementById('code-label').innerText = '접속 완료!';
-                document.getElementById('display-code').innerText = '대기실 접속됨';
-                setStatus('');
-                updateLobbyUI();
-            } else if (data.type === 'ROUND_START') {
-                showScreen('draw-screen');
-                clearCanvas();
-                document.getElementById('round-info').innerText = `${data.round} / 8 라운드`;
-                document.getElementById('target-word').innerText = data.word;
-            } else if (data.type === 'TIMER') {
-                if (document.getElementById('draw-screen').classList.contains('active')) {
-                    document.getElementById('draw-timer').innerText = data.time;
-                    if (data.time === 1) sendDrawing();
-                } else if (document.getElementById('vote-screen').classList.contains('active')) {
-                    document.getElementById('vote-timer').innerText = data.time;
+
+                // 화면 상태 변경 감지
+                if (data.state === 'DRAWING' && !document.getElementById('draw-screen').classList.contains('active')) {
+                    showScreen('draw-screen');
+                    clearCanvas();
+                    document.getElementById('round-info').innerText = `${data.round} / 8 라운드`;
+                    document.getElementById('target-word').innerText = data.word;
+                } else if (data.state === 'VOTING' && !document.getElementById('vote-screen').classList.contains('active')) {
+                    showVoteScreen(data.players);
+                } else if (data.state === 'RESULT' && !document.getElementById('result-screen').classList.contains('active')) {
+                    showResultScreen(data.winners, data.players);
+                } else if (data.state === 'END' && !document.getElementById('end-screen').classList.contains('active')) {
+                    showEndScreen(data.players);
                 }
-            } else if (data.type === 'VOTE_START') {
-                showVoteScreen(data.drawings);
-            } else if (data.type === 'RESULT') {
-                showResultScreen(data.winners, data.players);
-            } else if (data.type === 'END') {
-                showEndScreen(data.players);
-            }
+
+                // 타이머 동기화
+                if (data.state === 'DRAWING') {
+                    document.getElementById('draw-timer').innerText = data.timeLeft;
+                    if (data.timeLeft === 1) sendDrawing();
+                } else if (data.state === 'VOTING') {
+                    document.getElementById('vote-timer').innerText = data.timeLeft;
+                }
+            });
         }
 
-        function updateLobbyUI() {
+        function updateLobbyUI(players) {
             const list = document.getElementById('player-list');
             list.innerHTML = Object.values(players).map(p => `<li><b>${p.name}</b></li>`).join('');
         }
 
-        // --- 게임 루프 ---
+        // --- 게임 루프 (Host 제어) ---
         function hostStartGame() {
-            currentRound = 0;
-            for (let id in players) players[id].score = 0;
-            hostNextRound();
+            hostNextRound(1);
         }
 
-        function hostNextRound() {
-            currentRound++;
-            if (currentRound > 8) {
-                sendMsg({ type: 'END', players: players });
+        function hostNextRound(roundNum) {
+            if (roundNum > 8) {
+                roomRef.update({ state: 'END' });
                 return;
             }
 
-            currentWord = WORDS[Math.floor(Math.random() * WORDS.length)];
-            for (let id in players) {
-                players[id].drawing = null;
-                players[id].votedFor = null;
-            }
+            const randomWord = WORDS[Math.floor(Math.random() * WORDS.length)];
 
-            sendMsg({ type: 'ROUND_START', round: currentRound, word: currentWord });
+            // 유저 선택/그림 초기화
+            roomRef.child('players').once('value', snapshot => {
+                const players = snapshot.val();
+                for (let id in players) {
+                    roomRef.child(`players/${id}`).update({ drawing: '', vote: '' });
+                }
+            });
+
+            roomRef.update({
+                state: 'DRAWING',
+                round: roundNum,
+                word: randomWord,
+                timeLeft: 30
+            });
 
             let time = 30;
             clearInterval(timerInterval);
             timerInterval = setInterval(() => {
                 time--;
-                sendMsg({ type: 'TIMER', time: time });
+                roomRef.update({ timeLeft: time });
 
                 if (time <= 0) {
                     clearInterval(timerInterval);
-                    hostStartVote();
+                    hostStartVote(roundNum);
                 }
             }, 1000);
         }
 
-        function hostStartVote() {
-            const drawings = {};
-            for (let id in players) {
-                drawings[id] = { name: players[id].name, image: players[id].drawing };
-            }
-
-            sendMsg({ type: 'VOTE_START', drawings: drawings });
+        function hostStartVote(roundNum) {
+            roomRef.update({
+                state: 'VOTING',
+                timeLeft: 15
+            });
 
             let time = 15;
             clearInterval(timerInterval);
             timerInterval = setInterval(() => {
                 time--;
-                sendMsg({ type: 'TIMER', time: time });
+                roomRef.update({ timeLeft: time });
 
                 if (time <= 0) {
                     clearInterval(timerInterval);
-                    hostCalcResult();
+                    hostCalcResult(roundNum);
                 }
             }, 1000);
         }
 
-        function hostCalcResult() {
-            const votes = {};
-            for (let id in players) {
-                const target = players[id].votedFor;
-                if (target) votes[target] = (votes[target] || 0) + 1;
-            }
+        function hostCalcResult(roundNum) {
+            roomRef.child('players').once('value', snapshot => {
+                const players = snapshot.val() || {};
+                const votes = {};
 
-            let max = 0;
-            for (let t in votes) if (votes[t] > max) max = votes[t];
+                for (let id in players) {
+                    const target = players[id].vote;
+                    if (target) votes[target] = (votes[target] || 0) + 1;
+                }
 
-            let winners = [];
-            if (max > 0) {
-                for (let t in votes) {
-                    if (votes[t] === max && players[t]) {
-                        players[t].score += 1;
-                        winners.push(players[t].name);
+                let max = 0;
+                for (let t in votes) if (votes[t] > max) max = votes[t];
+
+                let winners = [];
+                if (max > 0) {
+                    for (let t in votes) {
+                        if (votes[t] === max && players[t]) {
+                            players[t].score = (players[t].score || 0) + 1;
+                            roomRef.child(`players/${t}/score`).set(players[t].score);
+                            winners.push(players[t].name);
+                        }
                     }
                 }
-            }
 
-            sendMsg({ type: 'RESULT', winners: winners, players: players });
-            setTimeout(() => { hostNextRound(); }, 5000);
+                roomRef.update({
+                    state: 'RESULT',
+                    winners: winners
+                });
+
+                setTimeout(() => {
+                    hostNextRound(roundNum + 1);
+                }, 5000);
+            });
         }
 
-        // --- Canvas 및 화면 제어 ---
+        // --- Canvas 및 기능 함수 ---
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
         let drawing = false;
@@ -356,15 +369,15 @@
 
         function sendDrawing() {
             const img = canvas.toDataURL('image/png');
-            sendMsg({ type: 'SUBMIT_DRAWING', senderId: myId, image: img });
+            roomRef.child(`players/${myId}/drawing`).set(img);
         }
 
-        function showVoteScreen(drawings) {
+        function showVoteScreen(players) {
             showScreen('vote-screen');
             const grid = document.getElementById('drawing-grid');
             grid.innerHTML = '';
 
-            for (let id in drawings) {
+            for (let id in players) {
                 if (id === myId) continue;
 
                 const card = document.createElement('div');
@@ -372,13 +385,13 @@
                 card.onclick = () => {
                     document.querySelectorAll('.card').forEach(c => c.style.borderColor = '#eee');
                     card.style.borderColor = '#2ecc71';
-                    sendMsg({ type: 'SUBMIT_VOTE', senderId: myId, targetId: id });
+                    roomRef.child(`players/${myId}/vote`).set(id);
                 };
 
                 const img = document.createElement('img');
-                img.src = drawings[id].image || '';
+                img.src = players[id].drawing || '';
                 const name = document.createElement('p');
-                name.innerText = drawings[id].name;
+                name.innerText = players[id].name;
 
                 card.appendChild(img);
                 card.appendChild(name);
@@ -388,20 +401,21 @@
 
         function showResultScreen(winners, playersData) {
             showScreen('result-screen');
-            document.getElementById('winner-text').innerText = winners.length > 0 
-                ? `🎉 승자: ${winners.join(', ')}` 
+            const winnerArr = winners || [];
+            document.getElementById('winner-text').innerText = winnerArr.length > 0 
+                ? `🎉 승자: ${winnerArr.join(', ')}` 
                 : '득표자가 없습니다.';
 
-            document.getElementById('score-board').innerHTML = Object.values(playersData)
-                .sort((a,b) => b.score - a.score)
-                .map(p => `<li>${p.name}: <b>${p.score}점</b></li>`).join('');
+            document.getElementById('score-board').innerHTML = Object.values(playersData || {})
+                .sort((a,b) => (b.score || 0) - (a.score || 0))
+                .map(p => `<li>${p.name}: <b>${p.score || 0}점</b></li>`).join('');
         }
 
         function showEndScreen(playersData) {
             showScreen('end-screen');
-            document.getElementById('final-board').innerHTML = Object.values(playersData)
-                .sort((a,b) => b.score - a.score)
-                .map((p, i) => `<li>${i+1}위 - ${p.name}: <b>${p.score}점</b></li>`).join('');
+            document.getElementById('final-board').innerHTML = Object.values(playersData || {})
+                .sort((a,b) => (b.score || 0) - (a.score || 0))
+                .map((p, i) => `<li>${i+1}위 - ${p.name}: <b>${p.score || 0}점</b></li>`).join('');
         }
     </script>
 </body>
