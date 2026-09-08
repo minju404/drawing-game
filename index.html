@@ -3,10 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>멀티 캐치 드로잉</title>
-    <!-- Firebase SDK (P2P 통신 차단 문제 해결용) -->
-    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    <title>노설치 멀티 드로잉 게임</title>
+    <!-- PeerJS CDN -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background: #f4f7f6; margin: 0; padding: 20px; }
         .screen { display: none; background: white; max-width: 550px; margin: 0 auto; padding: 25px; border-radius: 15px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
@@ -18,11 +17,10 @@
         .card { border: 3px solid #eee; padding: 10px; border-radius: 10px; cursor: pointer; background: #fff; transition: 0.2s; }
         .card:hover { border-color: #3498db; }
         .card img { width: 140px; height: 140px; background: #fafafa; border-radius: 5px; }
-        button { padding: 12px 24px; font-size: 16px; background: #3498db; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
+        button { padding: 10px 20px; font-size: 16px; background: #3498db; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
         button:hover { background: #2980b9; }
-        input { padding: 12px; font-size: 16px; border: 1px solid #ddd; border-radius: 8px; outline: none; text-align: center; }
-        .room-code { background: #eef2f5; padding: 12px; border-radius: 8px; font-weight: bold; font-size: 26px; color: #2c3e50; letter-spacing: 4px; margin: 10px 0; cursor: pointer; }
-        #status-msg { margin-top: 15px; font-weight: bold; color: #e67e22; min-height: 24px; }
+        input { padding: 10px; font-size: 16px; border: 1px solid #ddd; border-radius: 8px; outline: none; }
+        .room-code { background: #eef2f5; padding: 10px; border-radius: 8px; font-weight: bold; letter-spacing: 2px; font-size: 20px; word-break: break-all; }
     </style>
 </head>
 <body>
@@ -33,21 +31,18 @@
         <p>설치 없이 브라우저에서 바로 즐기는 게임</p>
         <input type="text" id="nickname" placeholder="닉네임 입력"><br><br>
         
-        <div id="action-buttons">
-            <button id="create-btn" type="button" onclick="createRoom()">방 만들기 (방장)</button>
-            <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
-            <input type="text" id="join-code" placeholder="6자리 방 코드 입력" maxlength="6" style="text-transform: uppercase;">
-            <button id="join-btn" type="button" onclick="joinRoom()">참여하기</button>
-        </div>
-
-        <div id="status-msg"></div>
+        <button onclick="createRoom()">방 만들기 (방장)</button>
+        <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
+        
+        <input type="text" id="join-code" placeholder="6자리 방 코드 입력" maxlength="6" style="text-transform:uppercase;">
+        <button onclick="joinRoom()">참여하기</button>
 
         <div id="room-info" style="display:none; margin-top: 20px;">
-            <p id="code-label">친구에게 아래 코드를 전달하세요 (클릭시 복사):</p>
-            <div class="room-code" id="display-code" onclick="copyCode()">------</div>
+            <p>친구에게 아래 코드를 전달하세요:</p>
+            <div class="room-code" id="display-code"></div>
             <h3>참여 유저 목록</h3>
             <ul id="player-list" style="list-style:none; padding:0;"></ul>
-            <button id="start-btn" type="button" onclick="hostStartGame()" style="display:none; background:#2ecc71;">게임 시작 (8라운드)</button>
+            <button id="start-btn" onclick="hostStartGame()" style="display:none; background:#2ecc71;">게임 시작 (8라운드)</button>
         </div>
     </div>
 
@@ -57,7 +52,7 @@
         <div class="timer">남은 시간: <span id="draw-timer">30</span>초</div>
         <div class="word">제시어: <span id="target-word">?</span></div>
         <canvas id="canvas" width="300" height="300"></canvas><br><br>
-        <button type="button" onclick="clearCanvas()">지우기</button>
+        <button onclick="clearCanvas()">지우기</button>
     </div>
 
     <!-- 3. 투표 -->
@@ -79,27 +74,25 @@
     <div id="end-screen" class="screen">
         <h1>🏆 최종 결과 🏆</h1>
         <ul id="final-board" style="list-style:none; padding:0; font-size:20px;"></ul>
-        <button type="button" onclick="location.reload()">처음으로</button>
+        <button onclick="location.reload()">처음으로</button>
     </div>
 
     <script>
-        // 공개 Realtime Database 설정
-        const firebaseConfig = {
-            databaseURL: "https://public-drawing-game-default-rtdb.asia-southeast1.firebasedatabase.app/"
-        };
-        firebase.initializeApp(firebaseConfig);
-        const db = firebase.database();
-
         const WORDS = ['사과', '바나나', '호랑이', '자동차', '비행기', '피자', '컴퓨터', '우주선', '안경', '축구공', '선글라스', '고양이'];
-        let roomRef = null;
-        let roomCode = '';
-        let myId = 'u_' + Math.random().toString(36).substring(2, 9);
-        let myName = '';
+        let peer = null;
         let isHost = false;
+        let myId = '';
+        let myName = '';
+        let hostConn = null;
+        let conns = [];
+
+        let players = {};
+        let currentRound = 0;
+        let currentWord = '';
         let timerInterval = null;
 
-        function generateShortCode() {
-            const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+        function generate6DigitCode() {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
             let result = '';
             for (let i = 0; i < 6; i++) {
                 result += chars.charAt(Math.floor(Math.random() * chars.length));
@@ -107,227 +100,242 @@
             return result;
         }
 
-        function setStatus(msg) {
-            document.getElementById('status-msg').innerText = msg;
-        }
-
         function showScreen(id) {
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
             document.getElementById(id).classList.add('active');
         }
 
-        function disableInputs() {
-            document.getElementById('action-buttons').style.display = 'none';
-            document.getElementById('nickname').disabled = true;
-        }
-
-        function copyCode() {
-            const code = document.getElementById('display-code').innerText;
-            if (code && code !== '------') {
-                navigator.clipboard.writeText(code);
-                alert('방 코드가 복사되었습니다: ' + code);
-            }
-        }
-
         // --- 방 만들기 (Host) ---
         function createRoom() {
-            myName = document.getElementById('nickname').value.trim() || '방장';
+            myName = document.getElementById('nickname').value.trim();
+            if (!myName) return alert('닉네임을 입력하세요.');
+
             isHost = true;
-            disableInputs();
+            const roomCode = generate6DigitCode();
+            
+            // PeerJS Custom ID 사용
+            peer = new Peer(roomCode);
 
-            roomCode = generateShortCode();
-            roomRef = db.ref('rooms/' + roomCode);
-
-            const initialData = {
-                state: 'LOBBY',
-                round: 0,
-                word: '',
-                timeLeft: 0,
-                players: {}
-            };
-            initialData.players[myId] = { name: myName, score: 0, drawing: '', vote: '' };
-
-            roomRef.set(initialData).then(() => {
-                document.getElementById('display-code').innerText = roomCode;
+            peer.on('open', (id) => {
+                myId = id;
+                players[myId] = { name: myName, score: 0, drawing: null, votedFor: null };
+                document.getElementById('display-code').innerText = id;
                 document.getElementById('room-info').style.display = 'block';
                 document.getElementById('start-btn').style.display = 'inline-block';
-                setStatus('방이 생성되었습니다.');
-                listenRoomChanges();
+                updateLobbyUI();
             });
 
-            roomRef.child('players/' + myId).onDisconnect().remove();
+            peer.on('connection', (conn) => {
+                conns.push(conn);
+                conn.on('data', (data) => handleHostData(conn, data));
+                conn.on('close', () => {
+                    delete players[conn.peer];
+                    broadcast({ type: 'LOBBY_UPDATE', players });
+                    updateLobbyUI();
+                });
+            });
+
+            peer.on('error', (err) => {
+                if (err.type === 'unavailable-id') {
+                    alert('방 코드 생성에 실패했습니다. 다시 시도해주세요.');
+                } else {
+                    alert('오류 발생: ' + err.type);
+                }
+            });
         }
 
         // --- 방 참여하기 (Client) ---
         function joinRoom() {
-            myName = document.getElementById('nickname').value.trim() || '게스트';
-            roomCode = document.getElementById('join-code').value.trim().toUpperCase();
-            
-            if (!roomCode || roomCode.length !== 6) {
-                alert('6자리 방 코드를 정확히 입력하세요.');
-                return;
-            }
+            myName = document.getElementById('nickname').value.trim();
+            if (!myName) return alert('닉네임을 입력하세요.');
 
-            setStatus('방에 접속 중...');
-            roomRef = db.ref('rooms/' + roomCode);
+            const code = document.getElementById('join-code').value.trim().toUpperCase();
+            if (code.length !== 6) return alert('6자리 방 코드를 올바르게 입력하세요.');
 
-            roomRef.once('value').then(snapshot => {
-                if (!snapshot.exists()) {
-                    setStatus('존재하지 않는 방 코드입니다.');
+            isHost = false;
+            peer = new Peer();
+
+            peer.on('open', (id) => {
+                myId = id;
+                hostConn = peer.connect(code);
+
+                hostConn.on('open', () => {
+                    hostConn.send({ type: 'JOIN', name: myName });
+                });
+
+                hostConn.on('data', (data) => handleClientData(data));
+                
+                hostConn.on('close', () => {
+                    alert('방장과의 연결이 끊어졌습니다.');
+                });
+            });
+
+            peer.on('error', (err) => {
+                if (err.type === 'peer-not-found') {
+                    alert('존재하지 않는 방 코드입니다.');
+                } else {
+                    alert('연결 오류가 발생했습니다.');
+                }
+            });
+        }
+
+        // --- 호스트 데이터 처리 ---
+        function handleHostData(conn, data) {
+            if (data.type === 'JOIN') {
+                // 1인 1닉네임 중복 체크
+                const isDuplicateName = Object.values(players).some(p => p.name === data.name);
+                
+                if (isDuplicateName) {
+                    conn.send({ type: 'REJECT', reason: '이미 존재하는 닉네임입니다.' });
+                    setTimeout(() => conn.close(), 500);
                     return;
                 }
 
-                disableInputs();
-                
-                roomRef.child('players/' + myId).set({
-                    name: myName,
-                    score: 0,
-                    drawing: '',
-                    vote: ''
-                }).then(() => {
-                    document.getElementById('room-info').style.display = 'block';
-                    document.getElementById('code-label').innerText = '접속 완료!';
-                    document.getElementById('display-code').innerText = roomCode;
-                    setStatus('');
-                    listenRoomChanges();
-                });
+                players[conn.peer] = { name: data.name, score: 0, drawing: null, votedFor: null };
+                broadcast({ type: 'LOBBY_UPDATE', players });
+                updateLobbyUI();
+            } else if (data.type === 'SUBMIT_DRAWING') {
+                if (players[conn.peer]) players[conn.peer].drawing = data.image;
+            } else if (data.type === 'SUBMIT_VOTE') {
+                if (players[conn.peer] && data.targetId !== conn.peer) {
+                    players[conn.peer].votedFor = data.targetId;
+                }
+            }
+        }
 
-                roomRef.child('players/' + myId).onDisconnect().remove();
+        // --- 클라이언트 데이터 처리 ---
+        function handleClientData(data) {
+            if (data.type === 'REJECT') {
+                alert(data.reason);
+                if (peer) peer.destroy();
+            } else if (data.type === 'LOBBY_UPDATE') {
+                players = data.players;
+                document.getElementById('room-info').style.display = 'block';
+                document.getElementById('display-code').innerText = '참여 완료';
+                updateLobbyUI();
+            } else if (data.type === 'ROUND_START') {
+                showScreen('draw-screen');
+                clearCanvas();
+                document.getElementById('round-info').innerText = `${data.round} / 8 라운드`;
+                document.getElementById('target-word').innerText = data.word;
+            } else if (data.type === 'TIMER') {
+                if (document.getElementById('draw-screen').classList.contains('active')) {
+                    document.getElementById('draw-timer').innerText = data.time;
+                    if (data.time === 1) sendDrawing();
+                } else if (document.getElementById('vote-screen').classList.contains('active')) {
+                    document.getElementById('vote-timer').innerText = data.time;
+                }
+            } else if (data.type === 'VOTE_START') {
+                showVoteScreen(data.drawings);
+            } else if (data.type === 'RESULT') {
+                showResultScreen(data.winners, data.players);
+            } else if (data.type === 'END') {
+                showEndScreen(data.players);
+            }
+        }
+
+        function broadcast(data) {
+            conns.forEach(c => {
+                if (c.open) c.send(data);
             });
         }
 
-        // --- 실시간 데이터 동기화 ---
-        function listenRoomChanges() {
-            roomRef.on('value', snapshot => {
-                const data = snapshot.val();
-                if (!data) return;
-
-                if (data.players) {
-                    updateLobbyUI(data.players);
-                }
-
-                if (data.state === 'DRAWING' && !document.getElementById('draw-screen').classList.contains('active')) {
-                    showScreen('draw-screen');
-                    clearCanvas();
-                    document.getElementById('round-info').innerText = `${data.round} / 8 라운드`;
-                    document.getElementById('target-word').innerText = data.word;
-                } else if (data.state === 'VOTING' && !document.getElementById('vote-screen').classList.contains('active')) {
-                    showVoteScreen(data.players);
-                } else if (data.state === 'RESULT' && !document.getElementById('result-screen').classList.contains('active')) {
-                    showResultScreen(data.winners, data.players);
-                } else if (data.state === 'END' && !document.getElementById('end-screen').classList.contains('active')) {
-                    showEndScreen(data.players);
-                }
-
-                if (data.state === 'DRAWING') {
-                    document.getElementById('draw-timer').innerText = data.timeLeft;
-                    if (data.timeLeft === 1) sendDrawing();
-                } else if (data.state === 'VOTING') {
-                    document.getElementById('vote-timer').innerText = data.timeLeft;
-                }
-            });
-        }
-
-        function updateLobbyUI(players) {
+        function updateLobbyUI() {
             const list = document.getElementById('player-list');
             list.innerHTML = Object.values(players).map(p => `<li><b>${p.name}</b></li>`).join('');
         }
 
-        // --- 게임 루프 ---
+        // --- 게임 루프 (Host 제어) ---
         function hostStartGame() {
-            hostNextRound(1);
+            currentRound = 0;
+            for (let id in players) players[id].score = 0;
+            hostNextRound();
         }
 
-        function hostNextRound(roundNum) {
-            if (roundNum > 8) {
-                roomRef.update({ state: 'END' });
+        function hostNextRound() {
+            currentRound++;
+            if (currentRound > 8) {
+                broadcast({ type: 'END', players });
+                showEndScreen(players);
                 return;
             }
 
-            const randomWord = WORDS[Math.floor(Math.random() * WORDS.length)];
+            currentWord = WORDS[Math.floor(Math.random() * WORDS.length)];
+            for (let id in players) {
+                players[id].drawing = null;
+                players[id].votedFor = null;
+            }
 
-            roomRef.child('players').once('value', snapshot => {
-                const players = snapshot.val();
-                for (let id in players) {
-                    roomRef.child(`players/${id}`).update({ drawing: '', vote: '' });
-                }
-            });
-
-            roomRef.update({
-                state: 'DRAWING',
-                round: roundNum,
-                word: randomWord,
-                timeLeft: 30
-            });
+            const roundData = { type: 'ROUND_START', round: currentRound, word: currentWord };
+            broadcast(roundData);
+            handleClientData(roundData);
 
             let time = 30;
             clearInterval(timerInterval);
             timerInterval = setInterval(() => {
                 time--;
-                roomRef.update({ timeLeft: time });
+                broadcast({ type: 'TIMER', time });
+                handleClientData({ type: 'TIMER', time });
 
                 if (time <= 0) {
                     clearInterval(timerInterval);
-                    hostStartVote(roundNum);
+                    hostStartVote();
                 }
             }, 1000);
         }
 
-        function hostStartVote(roundNum) {
-            roomRef.update({
-                state: 'VOTING',
-                timeLeft: 15
-            });
+        function hostStartVote() {
+            const drawings = {};
+            for (let id in players) {
+                drawings[id] = { name: players[id].name, image: players[id].drawing };
+            }
+
+            const voteData = { type: 'VOTE_START', drawings };
+            broadcast(voteData);
+            handleClientData(voteData);
 
             let time = 15;
             clearInterval(timerInterval);
             timerInterval = setInterval(() => {
                 time--;
-                roomRef.update({ timeLeft: time });
+                broadcast({ type: 'TIMER', time });
+                handleClientData({ type: 'TIMER', time });
 
                 if (time <= 0) {
                     clearInterval(timerInterval);
-                    hostCalcResult(roundNum);
+                    hostCalcResult();
                 }
             }, 1000);
         }
 
-        function hostCalcResult(roundNum) {
-            roomRef.child('players').once('value', snapshot => {
-                const players = snapshot.val() || {};
-                const votes = {};
+        function hostCalcResult() {
+            const votes = {};
+            for (let id in players) {
+                const target = players[id].votedFor;
+                if (target) votes[target] = (votes[target] || 0) + 1;
+            }
 
-                for (let id in players) {
-                    const target = players[id].vote;
-                    if (target) votes[target] = (votes[target] || 0) + 1;
-                }
+            let max = 0;
+            for (let t in votes) if (votes[t] > max) max = votes[t];
 
-                let max = 0;
-                for (let t in votes) if (votes[t] > max) max = votes[t];
-
-                let winners = [];
-                if (max > 0) {
-                    for (let t in votes) {
-                        if (votes[t] === max && players[t]) {
-                            players[t].score = (players[t].score || 0) + 1;
-                            roomRef.child(`players/${t}/score`).set(players[t].score);
-                            winners.push(players[t].name);
-                        }
+            let winners = [];
+            if (max > 0) {
+                for (let t in votes) {
+                    if (votes[t] === max && players[t]) {
+                        players[t].score += 1;
+                        winners.push(players[t].name);
                     }
                 }
+            }
 
-                roomRef.update({
-                    state: 'RESULT',
-                    winners: winners
-                });
+            const resultData = { type: 'RESULT', winners, players };
+            broadcast(resultData);
+            handleClientData(resultData);
 
-                setTimeout(() => {
-                    hostNextRound(roundNum + 1);
-                }, 5000);
-            });
+            setTimeout(() => { hostNextRound(); }, 5000);
         }
 
-        // --- Canvas 및 기능 함수 ---
+        // --- Canvas 및 화면 제어 ---
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
         let drawing = false;
@@ -338,10 +346,6 @@
         canvas.addEventListener('mousedown', () => drawing = true);
         canvas.addEventListener('mouseup', () => { drawing = false; ctx.beginPath(); });
         canvas.addEventListener('mousemove', draw);
-
-        canvas.addEventListener('touchstart', (e) => { drawing = true; draw(e.touches[0]); e.preventDefault(); });
-        canvas.addEventListener('touchend', () => { drawing = false; ctx.beginPath(); });
-        canvas.addEventListener('touchmove', (e) => { draw(e.touches[0]); e.preventDefault(); });
 
         function draw(e) {
             if (!drawing) return;
@@ -356,15 +360,16 @@
 
         function sendDrawing() {
             const img = canvas.toDataURL('image/png');
-            roomRef.child(`players/${myId}/drawing`).set(img);
+            if (isHost) players[myId].drawing = img;
+            else hostConn.send({ type: 'SUBMIT_DRAWING', image: img });
         }
 
-        function showVoteScreen(players) {
+        function showVoteScreen(drawings) {
             showScreen('vote-screen');
             const grid = document.getElementById('drawing-grid');
             grid.innerHTML = '';
 
-            for (let id in players) {
+            for (let id in drawings) {
                 if (id === myId) continue;
 
                 const card = document.createElement('div');
@@ -372,13 +377,14 @@
                 card.onclick = () => {
                     document.querySelectorAll('.card').forEach(c => c.style.borderColor = '#eee');
                     card.style.borderColor = '#2ecc71';
-                    roomRef.child(`players/${myId}/vote`).set(id);
+                    if (isHost) players[myId].votedFor = id;
+                    else hostConn.send({ type: 'SUBMIT_VOTE', targetId: id });
                 };
 
                 const img = document.createElement('img');
-                img.src = players[id].drawing || '';
+                img.src = drawings[id].image || '';
                 const name = document.createElement('p');
-                name.innerText = players[id].name;
+                name.innerText = drawings[id].name;
 
                 card.appendChild(img);
                 card.appendChild(name);
@@ -388,429 +394,20 @@
 
         function showResultScreen(winners, playersData) {
             showScreen('result-screen');
-            const winnerArr = winners || [];
-            document.getElementById('winner-text').innerText = winnerArr.length > 0 
-                ? `🎉 승자: ${winnerArr.join(', ')}` 
+            document.getElementById('winner-text').innerText = winners.length > 0 
+                ? `🎉 승자: ${winners.join(', ')}` 
                 : '득표자가 없습니다.';
 
-            document.getElementById('score-board').innerHTML = Object.values(playersData || {})
-                .sort((a,b) => (b.score || 0) - (a.score || 0))
-                .map(p => `<li>${p.name}: <b>${p.score || 0}점</b></li>`).join('');
+            document.getElementById('score-board').innerHTML = Object.values(playersData)
+                .sort((a,b) => b.score - a.score)
+                .map(p => `<li>${p.name}: <b>${p.score}점</b></li>`).join('');
         }
 
         function showEndScreen(playersData) {
             showScreen('end-screen');
-            document.getElementById('final-board').innerHTML = Object.values(playersData || {})
-                .sort((a,b) => (b.score || 0) - (a.score || 0))
-                .map((p, i) => `<li>${i+1}위 - ${p.name}: <b>${p.score || 0}점</b></li>`).join('');
-        }
-    </script>
-</body>
-</html><!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>멀티 캐치 드로잉</title>
-    <!-- Firebase SDK (P2P 통신 차단 문제 해결용) -->
-    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background: #f4f7f6; margin: 0; padding: 20px; }
-        .screen { display: none; background: white; max-width: 550px; margin: 0 auto; padding: 25px; border-radius: 15px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
-        .active { display: block; }
-        canvas { border: 2px solid #333; background: white; cursor: crosshair; border-radius: 10px; touch-action: none; }
-        .timer { font-size: 26px; font-weight: bold; color: #e74c3c; margin: 10px 0; }
-        .word { font-size: 28px; color: #2ecc71; font-weight: bold; margin: 10px 0; }
-        .grid { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 15px; }
-        .card { border: 3px solid #eee; padding: 10px; border-radius: 10px; cursor: pointer; background: #fff; transition: 0.2s; }
-        .card:hover { border-color: #3498db; }
-        .card img { width: 140px; height: 140px; background: #fafafa; border-radius: 5px; }
-        button { padding: 12px 24px; font-size: 16px; background: #3498db; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
-        button:hover { background: #2980b9; }
-        input { padding: 12px; font-size: 16px; border: 1px solid #ddd; border-radius: 8px; outline: none; text-align: center; }
-        .room-code { background: #eef2f5; padding: 12px; border-radius: 8px; font-weight: bold; font-size: 26px; color: #2c3e50; letter-spacing: 4px; margin: 10px 0; cursor: pointer; }
-        #status-msg { margin-top: 15px; font-weight: bold; color: #e67e22; min-height: 24px; }
-    </style>
-</head>
-<body>
-
-    <!-- 1. 대기실 -->
-    <div id="lobby-screen" class="screen active">
-        <h1>🎨 멀티 캐치 드로잉</h1>
-        <p>설치 없이 브라우저에서 바로 즐기는 게임</p>
-        <input type="text" id="nickname" placeholder="닉네임 입력"><br><br>
-        
-        <div id="action-buttons">
-            <button id="create-btn" type="button" onclick="createRoom()">방 만들기 (방장)</button>
-            <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
-            <input type="text" id="join-code" placeholder="6자리 방 코드 입력" maxlength="6" style="text-transform: uppercase;">
-            <button id="join-btn" type="button" onclick="joinRoom()">참여하기</button>
-        </div>
-
-        <div id="status-msg"></div>
-
-        <div id="room-info" style="display:none; margin-top: 20px;">
-            <p id="code-label">친구에게 아래 코드를 전달하세요 (클릭시 복사):</p>
-            <div class="room-code" id="display-code" onclick="copyCode()">------</div>
-            <h3>참여 유저 목록</h3>
-            <ul id="player-list" style="list-style:none; padding:0;"></ul>
-            <button id="start-btn" type="button" onclick="hostStartGame()" style="display:none; background:#2ecc71;">게임 시작 (8라운드)</button>
-        </div>
-    </div>
-
-    <!-- 2. 그림 그리기 -->
-    <div id="draw-screen" class="screen">
-        <h2 id="round-info">1 / 8 라운드</h2>
-        <div class="timer">남은 시간: <span id="draw-timer">30</span>초</div>
-        <div class="word">제시어: <span id="target-word">?</span></div>
-        <canvas id="canvas" width="300" height="300"></canvas><br><br>
-        <button type="button" onclick="clearCanvas()">지우기</button>
-    </div>
-
-    <!-- 3. 투표 -->
-    <div id="vote-screen" class="screen">
-        <h2>마음에 드는 그림에 투표하세요!</h2>
-        <div class="timer">남은 시간: <span id="vote-timer">15</span>초</div>
-        <div id="drawing-grid" class="grid"></div>
-    </div>
-
-    <!-- 4. 라운드 결과 -->
-    <div id="result-screen" class="screen">
-        <h2>라운드 결과</h2>
-        <h3 id="winner-text" style="color: #e67e22;"></h3>
-        <h3>현재 순위</h3>
-        <ul id="score-board" style="list-style:none; padding:0;"></ul>
-    </div>
-
-    <!-- 5. 최종 승리 -->
-    <div id="end-screen" class="screen">
-        <h1>🏆 최종 결과 🏆</h1>
-        <ul id="final-board" style="list-style:none; padding:0; font-size:20px;"></ul>
-        <button type="button" onclick="location.reload()">처음으로</button>
-    </div>
-
-    <script>
-        // 공개 Realtime Database 설정
-        const firebaseConfig = {
-            databaseURL: "https://public-drawing-game-default-rtdb.asia-southeast1.firebasedatabase.app/"
-        };
-        firebase.initializeApp(firebaseConfig);
-        const db = firebase.database();
-
-        const WORDS = ['사과', '바나나', '호랑이', '자동차', '비행기', '피자', '컴퓨터', '우주선', '안경', '축구공', '선글라스', '고양이'];
-        let roomRef = null;
-        let roomCode = '';
-        let myId = 'u_' + Math.random().toString(36).substring(2, 9);
-        let myName = '';
-        let isHost = false;
-        let timerInterval = null;
-
-        function generateShortCode() {
-            const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-            let result = '';
-            for (let i = 0; i < 6; i++) {
-                result += chars.charAt(Math.floor(Math.random() * chars.length));
-            }
-            return result;
-        }
-
-        function setStatus(msg) {
-            document.getElementById('status-msg').innerText = msg;
-        }
-
-        function showScreen(id) {
-            document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-            document.getElementById(id).classList.add('active');
-        }
-
-        function disableInputs() {
-            document.getElementById('action-buttons').style.display = 'none';
-            document.getElementById('nickname').disabled = true;
-        }
-
-        function copyCode() {
-            const code = document.getElementById('display-code').innerText;
-            if (code && code !== '------') {
-                navigator.clipboard.writeText(code);
-                alert('방 코드가 복사되었습니다: ' + code);
-            }
-        }
-
-        // --- 방 만들기 (Host) ---
-        function createRoom() {
-            myName = document.getElementById('nickname').value.trim() || '방장';
-            isHost = true;
-            disableInputs();
-
-            roomCode = generateShortCode();
-            roomRef = db.ref('rooms/' + roomCode);
-
-            const initialData = {
-                state: 'LOBBY',
-                round: 0,
-                word: '',
-                timeLeft: 0,
-                players: {}
-            };
-            initialData.players[myId] = { name: myName, score: 0, drawing: '', vote: '' };
-
-            roomRef.set(initialData).then(() => {
-                document.getElementById('display-code').innerText = roomCode;
-                document.getElementById('room-info').style.display = 'block';
-                document.getElementById('start-btn').style.display = 'inline-block';
-                setStatus('방이 생성되었습니다.');
-                listenRoomChanges();
-            });
-
-            roomRef.child('players/' + myId).onDisconnect().remove();
-        }
-
-        // --- 방 참여하기 (Client) ---
-        function joinRoom() {
-            myName = document.getElementById('nickname').value.trim() || '게스트';
-            roomCode = document.getElementById('join-code').value.trim().toUpperCase();
-            
-            if (!roomCode || roomCode.length !== 6) {
-                alert('6자리 방 코드를 정확히 입력하세요.');
-                return;
-            }
-
-            setStatus('방에 접속 중...');
-            roomRef = db.ref('rooms/' + roomCode);
-
-            roomRef.once('value').then(snapshot => {
-                if (!snapshot.exists()) {
-                    setStatus('존재하지 않는 방 코드입니다.');
-                    return;
-                }
-
-                disableInputs();
-                
-                roomRef.child('players/' + myId).set({
-                    name: myName,
-                    score: 0,
-                    drawing: '',
-                    vote: ''
-                }).then(() => {
-                    document.getElementById('room-info').style.display = 'block';
-                    document.getElementById('code-label').innerText = '접속 완료!';
-                    document.getElementById('display-code').innerText = roomCode;
-                    setStatus('');
-                    listenRoomChanges();
-                });
-
-                roomRef.child('players/' + myId).onDisconnect().remove();
-            });
-        }
-
-        // --- 실시간 데이터 동기화 ---
-        function listenRoomChanges() {
-            roomRef.on('value', snapshot => {
-                const data = snapshot.val();
-                if (!data) return;
-
-                if (data.players) {
-                    updateLobbyUI(data.players);
-                }
-
-                if (data.state === 'DRAWING' && !document.getElementById('draw-screen').classList.contains('active')) {
-                    showScreen('draw-screen');
-                    clearCanvas();
-                    document.getElementById('round-info').innerText = `${data.round} / 8 라운드`;
-                    document.getElementById('target-word').innerText = data.word;
-                } else if (data.state === 'VOTING' && !document.getElementById('vote-screen').classList.contains('active')) {
-                    showVoteScreen(data.players);
-                } else if (data.state === 'RESULT' && !document.getElementById('result-screen').classList.contains('active')) {
-                    showResultScreen(data.winners, data.players);
-                } else if (data.state === 'END' && !document.getElementById('end-screen').classList.contains('active')) {
-                    showEndScreen(data.players);
-                }
-
-                if (data.state === 'DRAWING') {
-                    document.getElementById('draw-timer').innerText = data.timeLeft;
-                    if (data.timeLeft === 1) sendDrawing();
-                } else if (data.state === 'VOTING') {
-                    document.getElementById('vote-timer').innerText = data.timeLeft;
-                }
-            });
-        }
-
-        function updateLobbyUI(players) {
-            const list = document.getElementById('player-list');
-            list.innerHTML = Object.values(players).map(p => `<li><b>${p.name}</b></li>`).join('');
-        }
-
-        // --- 게임 루프 ---
-        function hostStartGame() {
-            hostNextRound(1);
-        }
-
-        function hostNextRound(roundNum) {
-            if (roundNum > 8) {
-                roomRef.update({ state: 'END' });
-                return;
-            }
-
-            const randomWord = WORDS[Math.floor(Math.random() * WORDS.length)];
-
-            roomRef.child('players').once('value', snapshot => {
-                const players = snapshot.val();
-                for (let id in players) {
-                    roomRef.child(`players/${id}`).update({ drawing: '', vote: '' });
-                }
-            });
-
-            roomRef.update({
-                state: 'DRAWING',
-                round: roundNum,
-                word: randomWord,
-                timeLeft: 30
-            });
-
-            let time = 30;
-            clearInterval(timerInterval);
-            timerInterval = setInterval(() => {
-                time--;
-                roomRef.update({ timeLeft: time });
-
-                if (time <= 0) {
-                    clearInterval(timerInterval);
-                    hostStartVote(roundNum);
-                }
-            }, 1000);
-        }
-
-        function hostStartVote(roundNum) {
-            roomRef.update({
-                state: 'VOTING',
-                timeLeft: 15
-            });
-
-            let time = 15;
-            clearInterval(timerInterval);
-            timerInterval = setInterval(() => {
-                time--;
-                roomRef.update({ timeLeft: time });
-
-                if (time <= 0) {
-                    clearInterval(timerInterval);
-                    hostCalcResult(roundNum);
-                }
-            }, 1000);
-        }
-
-        function hostCalcResult(roundNum) {
-            roomRef.child('players').once('value', snapshot => {
-                const players = snapshot.val() || {};
-                const votes = {};
-
-                for (let id in players) {
-                    const target = players[id].vote;
-                    if (target) votes[target] = (votes[target] || 0) + 1;
-                }
-
-                let max = 0;
-                for (let t in votes) if (votes[t] > max) max = votes[t];
-
-                let winners = [];
-                if (max > 0) {
-                    for (let t in votes) {
-                        if (votes[t] === max && players[t]) {
-                            players[t].score = (players[t].score || 0) + 1;
-                            roomRef.child(`players/${t}/score`).set(players[t].score);
-                            winners.push(players[t].name);
-                        }
-                    }
-                }
-
-                roomRef.update({
-                    state: 'RESULT',
-                    winners: winners
-                });
-
-                setTimeout(() => {
-                    hostNextRound(roundNum + 1);
-                }, 5000);
-            });
-        }
-
-        // --- Canvas 및 기능 함수 ---
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d');
-        let drawing = false;
-
-        ctx.lineWidth = 4;
-        ctx.lineCap = 'round';
-
-        canvas.addEventListener('mousedown', () => drawing = true);
-        canvas.addEventListener('mouseup', () => { drawing = false; ctx.beginPath(); });
-        canvas.addEventListener('mousemove', draw);
-
-        canvas.addEventListener('touchstart', (e) => { drawing = true; draw(e.touches[0]); e.preventDefault(); });
-        canvas.addEventListener('touchend', () => { drawing = false; ctx.beginPath(); });
-        canvas.addEventListener('touchmove', (e) => { draw(e.touches[0]); e.preventDefault(); });
-
-        function draw(e) {
-            if (!drawing) return;
-            const rect = canvas.getBoundingClientRect();
-            ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
-        }
-
-        function clearCanvas() { ctx.clearRect(0, 0, canvas.width, canvas.height); }
-
-        function sendDrawing() {
-            const img = canvas.toDataURL('image/png');
-            roomRef.child(`players/${myId}/drawing`).set(img);
-        }
-
-        function showVoteScreen(players) {
-            showScreen('vote-screen');
-            const grid = document.getElementById('drawing-grid');
-            grid.innerHTML = '';
-
-            for (let id in players) {
-                if (id === myId) continue;
-
-                const card = document.createElement('div');
-                card.className = 'card';
-                card.onclick = () => {
-                    document.querySelectorAll('.card').forEach(c => c.style.borderColor = '#eee');
-                    card.style.borderColor = '#2ecc71';
-                    roomRef.child(`players/${myId}/vote`).set(id);
-                };
-
-                const img = document.createElement('img');
-                img.src = players[id].drawing || '';
-                const name = document.createElement('p');
-                name.innerText = players[id].name;
-
-                card.appendChild(img);
-                card.appendChild(name);
-                grid.appendChild(card);
-            }
-        }
-
-        function showResultScreen(winners, playersData) {
-            showScreen('result-screen');
-            const winnerArr = winners || [];
-            document.getElementById('winner-text').innerText = winnerArr.length > 0 
-                ? `🎉 승자: ${winnerArr.join(', ')}` 
-                : '득표자가 없습니다.';
-
-            document.getElementById('score-board').innerHTML = Object.values(playersData || {})
-                .sort((a,b) => (b.score || 0) - (a.score || 0))
-                .map(p => `<li>${p.name}: <b>${p.score || 0}점</b></li>`).join('');
-        }
-
-        function showEndScreen(playersData) {
-            showScreen('end-screen');
-            document.getElementById('final-board').innerHTML = Object.values(playersData || {})
-                .sort((a,b) => (b.score || 0) - (a.score || 0))
-                .map((p, i) => `<li>${i+1}위 - ${p.name}: <b>${p.score || 0}점</b></li>`).join('');
+            document.getElementById('final-board').innerHTML = Object.values(playersData)
+                .sort((a,b) => b.score - a.score)
+                .map((p, i) => `<li>${i+1}위 - ${p.name}: <b>${p.score}점</b></li>`).join('');
         }
     </script>
 </body>
